@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# Training outputs and downloaded data are large; keep them out of git.
+artifacts/
+data_cache/

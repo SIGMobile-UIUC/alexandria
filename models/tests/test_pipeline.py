@@ -74,9 +74,10 @@ def test_artifacts_written(artifacts):
 
 
 def test_inference(artifacts):
-    from alexandria_models.inference import AlexandriaModels
+    from alexandria_models.inference import COMPONENTS, AlexandriaModels
 
-    m = AlexandriaModels.load(artifacts, device="cpu")
+    assert AlexandriaModels.load(artifacts, device="cpu").generator is None  # CPU default skips it
+    m = AlexandriaModels.load(artifacts, components=COMPONENTS, device="cpu")
     status = m.status()
     assert all(status[k] for k in ("difficulty", "generator", "evaluator", "transliterator"))
     assert status["num_levels"] == 20 and status["sentence_bank"] > 0

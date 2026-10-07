@@ -51,3 +51,12 @@ def test_clean_pair():
     assert clean_pair("Paani", "पानी") == ("paani", "पानी")
     assert clean_pair("pa1ni", "पानी") is None
     assert clean_pair("paani", "pani") is None
+
+
+def test_english_contractions_are_unnegated():
+    from alexandria_models.evaluator.perturb import _en_negation
+
+    rng = random.Random(0)
+    assert _en_negation("I can't swim.", rng)[0] == "I can swim."
+    assert _en_negation("He doesn't eat meat.", rng)[0] == "He does eat meat."
+    assert _en_negation("Won't you come?", rng)[0] == "Will you come?"

@@ -66,6 +66,11 @@ def load_wmt23(cache_dir: str | None) -> dict[str, list[dict]]:
             if split == "train":
                 z_pairs.append((z, mean))
         out[split] = rows
+    # About a quarter of dev pairs also occur in train; drop them so validation is honest.
+    train_keys = {(r["src_en"], r["mt_hi"]) for r in out["train"]}
+    n_dev = len(out["dev"])
+    out["dev"] = [r for r in out["dev"] if (r["src_en"], r["mt_hi"]) not in train_keys]
+    log.info("WMT23 dev: dropped %d pairs also in train", n_dev - len(out["dev"]))
     # Test gold is released as z-scores only; map z -> raw DA with a linear fit on train.
     zs, raws = np.array([p[0] for p in z_pairs]), np.array([p[1] for p in z_pairs])
     slope, intercept = np.polyfit(zs, raws, 1) if len(zs) > 1 else (15.0, 80.0)
@@ -82,7 +87,8 @@ def load_wmt23(cache_dir: str | None) -> dict[str, list[dict]]:
             label = 0.0
         else:
             label = float(np.clip((intercept + slope * float(r["score"])) / 100, 0, 1))
-        test.append({"src_en": src[sid], "mt_hi": mt[sid], "label": label})
+        if (src[sid], mt[sid]) not in train_keys:
+            test.append({"src_en": src[sid], "mt_hi": mt[sid], "label": label})
     out["test"] = test
     log.info("WMT23 en-hi: %s", {k: len(v) for k, v in out.items()})
     return out

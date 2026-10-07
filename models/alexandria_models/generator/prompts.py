@@ -45,3 +45,15 @@ def parse_completion(text: str) -> tuple[str, str] | None:
         return None
     hi, en = m.group("hi").strip(), m.group("en").strip()
     return (hi, en) if hi and en else None
+
+
+def bos_prefix(tokenizer) -> list[int]:
+    """[bos_token_id] if this tokenizer normally starts sequences with BOS, else [].
+
+    Probes real tokenization instead of trusting ``add_bos_token``: Llama-3 tokenizers
+    add BOS through the tokenizer.json post-processor and report add_bos_token=False."""
+    bos = tokenizer.bos_token_id
+    if bos is None:
+        return []
+    ids = tokenizer("a")["input_ids"]
+    return [bos] if ids and ids[0] == bos else []

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import zipfile
 from dataclasses import dataclass, field
@@ -153,6 +154,7 @@ class ParallelSource:
     gated: bool = False  # needs a Hugging Face token + accepting the dataset's terms
     tags: tuple[str, ...] = field(default_factory=tuple)
     cap: int | None = None  # per-source maximum, on top of the run-wide cap
+    skip: int = 0  # leading rows to skip (e.g. a block of software strings at the start)
 
 
 def _hf_pairs(path: str, hi: str, en: str, name: str | None = None, split: str = "train",
@@ -261,6 +263,7 @@ PARALLEL_SOURCES: dict[str, ParallelSource] = {
     "iitb": ParallelSource(
         "iitb", "IIT Bombay English-Hindi corpus (government, news, Wikipedia)", "CC-BY-NC-4.0",
         _hf_pairs("cfilt/iitb-english-hindi", hi="translation.hi", en="translation.en"), weight=1.0,
+        skip=250_000,  # the split opens with ~240k GNOME/KDE UI strings
     ),
     "samanantar": ParallelSource(
         "samanantar", "AI4Bharat Samanantar en-hi (large, mined; noisier)", "CC-BY-NC-4.0",
@@ -302,7 +305,7 @@ def iter_parallel(
         cap = max_pairs_per_source
         if name in PARALLEL_SOURCES:
             src = PARALLEL_SOURCES[name]
-            pairs = src.load(token)
+            pairs = itertools.islice(src.load(token), src.skip, None)
             cap = min(cap, src.cap or cap)
         elif Path(name).exists():
             pairs = _local_parallel(Path(name))

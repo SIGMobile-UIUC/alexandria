@@ -65,6 +65,8 @@ HI_SPELLING = [
     ("ी", "ि"), ("ि", "ी"), ("ू", "ु"), ("ु", "ू"), ("ँ", "ं"), ("ं", "ँ"), ("़", ""), ("ै", "े"), ("ो", "ौ"),
 ]
 
+HI_SPELLING_SKIP = {normalize(w) for w in ("की", "कि", "को", "से", "है", "हैं", "में", "के", "का", "हूँ", "हूं")}
+
 # --------------------------------------------------------------------------- English
 EN_PRONOUN = _bidirectional([("I", "you"), ("he", "she"), ("He", "She"), ("we", "they"), ("We", "They"), ("my", "your"),
                              ("his", "her"), ("him", "her"), ("our", "their"), ("me", "him")])
@@ -74,7 +76,9 @@ EN_PREPOSITION = _bidirectional([("in", "on"), ("to", "from"), ("at", "in"), ("w
 EN_ANTONYM = _bidirectional([("big", "small"), ("hot", "cold"), ("good", "bad"), ("old", "new"), ("early", "late"),
                              ("happy", "sad"), ("open", "close"), ("always", "never"), ("tomorrow", "yesterday"),
                              ("today", "tomorrow"), ("many", "few"), ("love", "hate"), ("like", "dislike")])
-EN_NEGATION_RE = re.compile(r"\b(not|n't|never|no)\b", re.I)
+EN_NEGATION_RE = re.compile(r"\b(not|never|no)\b", re.I)
+EN_CONTRACTION_RE = re.compile(r"\b(\w+)n't\b", re.I)
+EN_IRREGULAR_CONTRACTIONS = {"can't": "can", "won't": "will", "shan't": "shall", "ain't": "is"}
 EN_AUX_RE = re.compile(r"\b(is|are|am|was|were|will|can|should|do|does|did|has|have|had)\b")
 
 
@@ -145,7 +149,9 @@ def _hi_negation(text: str, rng: random.Random) -> tuple[str, float] | None:
 
 def _hi_spelling(text: str, rng: random.Random) -> tuple[str, float] | None:
     a, b = rng.choice(HI_SPELLING)
-    idx = [m.start() for m in re.finditer(re.escape(a), text)]
+    # Only inside longer words: on short function words (की/कि, है/हैं) a "slip" changes meaning.
+    words = [m for m in re.finditer(r"\S+", text) if len(m.group()) >= 3 and m.group() not in HI_SPELLING_SKIP]
+    idx = [w.start() + k.start() for w in words for k in re.finditer(re.escape(a), w.group())]
     if not idx:
         return None
     i = rng.choice(idx)
@@ -153,6 +159,13 @@ def _hi_spelling(text: str, rng: random.Random) -> tuple[str, float] | None:
 
 
 def _en_negation(text: str, rng: random.Random) -> tuple[str, float] | None:
+    m = EN_CONTRACTION_RE.search(text)
+    if m:
+        word = m.group(0)
+        pos = EN_IRREGULAR_CONTRACTIONS.get(word.lower(), m.group(1))
+        if word[0].isupper():
+            pos = pos[:1].upper() + pos[1:]
+        return text[: m.start()] + pos + text[m.end():], 0.15
     if EN_NEGATION_RE.search(text):
         out = EN_NEGATION_RE.sub("", text, count=1)
         return re.sub(r"\s+", " ", out).strip(), 0.15

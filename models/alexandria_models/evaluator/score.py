@@ -86,6 +86,9 @@ class TranslationEvaluator:
         result: dict[str, Any] = {"source_lang": source_lang, "target_lang": "en" if source_lang == "hi" else "hi"}
         if not answer:
             return {**result, "score": 0.0, "interpreted_as": "", "romanized": False, "readings": []}
+        if source_lang == "hi" and is_devanagari(answer):  # answered in the source language
+            return {**result, "score": 0.0, "interpreted_as": answer, "romanized": False, "readings": [],
+                    "wrong_language": True}
 
         readings = [answer]
         romanized = source_lang == "en" and is_latin(answer, threshold=0.5)

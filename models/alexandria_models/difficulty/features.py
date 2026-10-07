@@ -72,6 +72,12 @@ IRREGULAR_FUTURE = _set("होगा होगी होंगे होंग�
 IRREGULAR_POLITE_IMPERATIVE = _set("कीजिए कीजिये दीजिए दीजिये लीजिए लीजिये पीजिए पीजिये")
 NOT_POLITE_IMPERATIVE = _set("चाहिए चाहिये लिए लिये किए किये दिए दिये पिए पिये")
 NOT_FUTURE = _set("आगे जागा जागी")
+# Nouns and particles that look like stem + verb suffix (पढ़ाई, पानी = पा + नी, चाहे).
+NOT_VERB_FORM = _set("पानी पढ़ाई कमाई लड़ाई सिलाई चढ़ाई बुनाई धुलाई लिखाई सफ़ाई सफाई भलाई चाहे खाना गाना सोना")
+# Genitive words before लिए/लिये, where it is the postposition "for", not a verb.
+GENITIVE_BEFORE_LIYE = _set("के मेरे तेरे तुम्हारे उसके इसके हमारे आपके उनके इनके किसके जिसके अपने")
+NOMINATIVE_PRONOUNS = _set("मैं तुम तू आप वह वो हम वे ये यह")
+DATIVE_PREDICATES = _set("पसंद चाहिए चाहिये पता मालूम ज़रूरत जरूरत डर भूख प्यास याद अच्छा बुरा")
 CONDITIONAL = _set("अगर यदि")
 SUBJUNCTIVE_MARKERS = _set("ताकि शायद चाहे कदाचित् कदाचित")
 RELATIVE = _set(
@@ -149,6 +155,8 @@ class _Ctx:
         self.pairs = list(zip(self.toks, self.toks[1:]))
 
     def has_suffix_on_stem(self, tok: str, suffixes: Iterable[str]) -> bool:
+        if tok in NOT_VERB_FORM:
+            return False
         for s in suffixes:
             if tok.endswith(s) and len(tok) > len(s) and tok[: -len(s)] in self.stems:
                 return True
@@ -159,6 +167,9 @@ class _Ctx:
 
     def habitual(self, tok: str) -> bool:
         return self.has_suffix_on_stem(tok, HABITUAL_SUFFIXES)
+
+    def is_postposition_liye(self, i: int) -> bool:
+        return self.toks[i] in ("लिए", "लिये") and i > 0 and self.toks[i - 1] in GENITIVE_BEFORE_LIYE
 
     def perfective(self, tok: str) -> bool:
         if tok in IRREGULAR_PERFECTIVE:
@@ -207,7 +218,7 @@ def _future(c: _Ctx) -> bool:
 
 def _simple_past(c: _Ctx) -> bool:
     # A perfective verb form that is not just the vector of a compound verb.
-    return any(c.perfective(t) for t in c.toks)
+    return any(c.perfective(t) and not c.is_postposition_liye(i) for i, t in enumerate(c.toks))
 
 
 def _ergative(c: _Ctx) -> bool:
@@ -215,7 +226,12 @@ def _ergative(c: _Ctx) -> bool:
 
 
 def _dative_subject(c: _Ctx) -> bool:
-    return c.any_tok(DATIVE_PRONOUNS)
+    # उसे/तुम्हें are often plain objects ("मैं उसे जानता हूँ"); require an experiencer predicate.
+    if not c.any_tok(DATIVE_PRONOUNS):
+        return False
+    if c.any_tok(DATIVE_PREDICATES) or any(t.startswith(("लग", "मिल")) for t in c.toks):
+        return True
+    return not c.any_tok(NOMINATIVE_PRONOUNS)
 
 
 def _obligation(c: _Ctx) -> bool:
@@ -226,7 +242,11 @@ def _compulsion(c: _Ctx) -> bool:
     return any(c.infinitive(a) and (b in PADNA_FORMS or b in _set("होगा होगी होंगे")) for a, b in c.pairs) or any(
         a in DATIVE_PRONOUNS and c.infinitive(b) and nxt in COPULA
         for a, b, nxt in zip(c.toks, c.toks[1:], c.toks[2:])
-    ) or any(c.infinitive(a) and b in COPULA_PRESENT for a, b in c.pairs if a.endswith("ना"))
+    ) or (
+        # "-ना है" means "have to" only with a dative subject (मुझे जाना है), not for खाना है.
+        any(t in DATIVE_PRONOUNS or t == "को" for t in c.toks)
+        and any(c.infinitive(a) and b in COPULA_PRESENT for a, b in c.pairs if a.endswith("ना"))
+    )
 
 
 def _conj_participle(c: _Ctx) -> bool:
@@ -236,7 +256,9 @@ def _conj_participle(c: _Ctx) -> bool:
 
 
 def _compound_verb(c: _Ctx) -> bool:
-    return any(a in c.stems and b in VECTOR_VERBS for a, b in c.pairs)
+    return any(
+        a in c.stems and b in VECTOR_VERBS and not c.is_postposition_liye(i + 1) for i, (a, b) in enumerate(c.pairs)
+    )
 
 
 def _sakna(c: _Ctx) -> bool:
@@ -254,6 +276,10 @@ def _paana(c: _Ctx) -> bool:
 def _relative(c: _Ctx) -> bool:
     for i, t in enumerate(c.toks):
         if t in RELATIVE:
+            if t in ("जैसे", "जैसा", "जैसी"):  # comparative "like" unless वैसे follows
+                if any(u in ("वैसे", "वैसा", "वैसी") for u in c.toks[i + 1 :]):
+                    return True
+                continue
             return any(u in CORRELATIVE for u in c.toks[i + 1 :])
     return False
 
@@ -264,7 +290,8 @@ def _subjunctive(c: _Ctx) -> bool:
 
 def _participle_hua(c: _Ctx) -> bool:
     return any((c.habitual(a) or c.perfective(a)) and b in PARTICIPLE_HUA for a, b in c.pairs) or any(
-        c.habitual(a) and b == "ही" for a, b in c.pairs
+        c.habitual(a) and a.endswith("ते") and b == "ही" and i + 2 < len(c.toks) and c.toks[i + 2] != "है"
+        for i, (a, b) in enumerate(c.pairs)
     )
 
 

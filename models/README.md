@@ -165,9 +165,9 @@ it logs and adjust the weights or the construction order.
 
 * The evaluator (~240M parameters), transliterator (~7M) and difficulty scorer run fine
   on a CPU.
-* The generator does not. A 3B model in float32 needs ~12 GB RAM and takes seconds per
-  sentence. Pre-generate sentences on Colab (step 5) and load without it:
-  `AlexandriaModels.load("artifacts", components=("difficulty", "evaluator", "transliterator"))`.
+* The generator does not: a 3B model needs ~7 GB RAM even in bfloat16 and takes seconds
+  per sentence. So `AlexandriaModels.load("artifacts")` skips it unless a GPU is used
+  (pass `components=COMPONENTS` to force it). Pre-generate sentences on Colab (step 5);
   `sentences()` then serves from `sentence_bank.jsonl` (real corpus sentences) and
   `generated_bank.jsonl`.
 * Endpoints are synchronous functions, so FastAPI runs them in its thread pool; each

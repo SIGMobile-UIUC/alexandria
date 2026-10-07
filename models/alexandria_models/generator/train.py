@@ -27,7 +27,7 @@ from pathlib import Path
 
 from ..common.io import get_logger, read_json, read_jsonl, set_seed, write_json
 from .presets import DEFAULT_PRESET, PRESETS, resolve_base_model
-from .prompts import PROMPT_FORMAT_VERSION, build_completion, build_prompt
+from .prompts import PROMPT_FORMAT_VERSION, bos_prefix, build_completion, build_prompt
 
 log = get_logger("generator.train")
 CONFIG_FILE = "generator_config.json"
@@ -37,9 +37,7 @@ def tokenize_example(tokenizer, row: dict, num_levels: int, max_len: int) -> dic
     """Prompt tokens are masked out of the loss (label -100); completion + EOS are trained."""
     prompt = build_prompt(row["level"], num_levels, row.get("word"), row.get("grammar"))
     completion = build_completion(row["hi"], row["en"])
-    prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    if tokenizer.bos_token_id is not None and getattr(tokenizer, "add_bos_token", True):
-        prompt_ids = [tokenizer.bos_token_id] + prompt_ids
+    prompt_ids = bos_prefix(tokenizer) + tokenizer(prompt, add_special_tokens=False)["input_ids"]
     comp_ids = tokenizer(completion, add_special_tokens=False)["input_ids"] + [tokenizer.eos_token_id]
     input_ids = (prompt_ids + comp_ids)[:max_len]
     labels = ([-100] * len(prompt_ids) + comp_ids)[:max_len]
@@ -87,10 +85,12 @@ def _nan_guard_callback():
             self.patience = patience
 
         def on_log(self, args, state, control, logs=None, **kwargs):
-            loss = (logs or {}).get("loss")
-            if loss is None:
+            logs = logs or {}
+            vals = [logs[k] for k in ("loss", "grad_norm", "eval_loss") if isinstance(logs.get(k), (int, float))]
+            if not vals:
                 return
-            if math.isnan(loss) or math.isinf(loss):
+            loss = next((v for v in vals if math.isnan(v) or math.isinf(v)), None)
+            if loss is not None:
                 self.bad += 1
                 if self.bad >= self.patience:
                     log.error(
@@ -211,6 +211,8 @@ def train(args: argparse.Namespace) -> Path:
         lr_scheduler_type="cosine",
         weight_decay=0.0,
         max_grad_norm=0.5,
+        logging_nan_inf_filter=False,  # let NaNGuard see overflowing losses
+        train_sampling_strategy="group_by_length",
         fp16=use_fp16,
         optim="paged_adamw_8bit" if use_4bit else "adamw_torch",
         logging_steps=args.logging_steps,
@@ -250,6 +252,7 @@ def train(args: argparse.Namespace) -> Path:
         {
             "prompt_format_version": PROMPT_FORMAT_VERSION,
             "num_levels": num_levels,
+            "max_seq_len": max_len,
             "base_model": base_model,
             "grammar_controls": meta.get("grammar_controls", []),
             "eval_loss": metrics.get("eval_loss"),
@@ -282,7 +285,7 @@ def merge_adapter(out_dir: str | Path, base_model: str, hf_token: str | None = N
     )
     merged = PeftModel.from_pretrained(base, out / "adapter").merge_and_unload()
     merged_dir = out / "merged"
-    merged.save_pretrained(merged_dir)
+    merged.save_pretrained(merged_dir, max_shard_size="1GB")
     load_tokenizer(str(out / "adapter")).save_pretrained(merged_dir)
     cfg = read_json(out / CONFIG_FILE)
     cfg["merged"] = True

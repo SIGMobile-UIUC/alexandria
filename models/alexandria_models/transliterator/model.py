@@ -154,9 +154,12 @@ class TransliterationModel(nn.Module):
             hyps = []
             for k in range(K):
                 ids = seqs[b, k, 1:].tolist()
-                length = next((i for i, t in enumerate(ids) if t in (EOS, PAD)), len(ids)) + 1
-                # Light length normalisation so long words are not unfairly penalised.
-                hyps.append((ids, float(scores[b, k]) / (length ** 0.6)))
+                end = next((i for i, t in enumerate(ids) if t in (EOS, PAD)), None)
+                length = (end if end is not None else len(ids)) + 1
+                # Light length normalisation so long words are not unfairly penalised;
+                # a hypothesis that never emitted EOS is a cut-off word, so rank it last.
+                score = float(scores[b, k]) / (length ** 0.6) - (1e4 if end is None else 0.0)
+                hyps.append((ids, score))
             hyps.sort(key=lambda h: -h[1])
             out.append(hyps)
         return out

@@ -103,3 +103,17 @@ def test_levels_cover_range_and_roundtrip(tmp_path, pairs):
         assert s2.level(h) == s.level(h)
     a = s2.analyze("मैंने उससे पत्र लिखवाया।")
     assert set(a) >= {"level", "score", "components", "constructions", "rare_words"}
+
+
+def test_review_false_positives():
+    from alexandria_models.difficulty.features import extract
+
+    def cons(s):
+        return set(extract(s).constructions)
+
+    assert "simple_past" not in cons("यह मेरे लिए है।")  # के लिए = "for"
+    assert "compulsion" not in cons("खाना अच्छा है।")
+    assert "compulsion" in cons("मुझे जाना है।")
+    assert "dative_subject" not in cons("मैं उसे जानता हूँ।")
+    assert "dative_subject" in cons("उसे चाय पसंद है।")
+    assert "relative_correlative" not in cons("वह शेर जैसा है।")

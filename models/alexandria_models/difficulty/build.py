@@ -70,7 +70,7 @@ def reference_sample(sources: list[str], per_source: int, token: str | None, see
     rng = random.Random(seed)
     pools: dict[str, list[str]] = {}
     seen_counts: Counter = Counter()
-    for src, hi, en in iter_parallel(sources, max_pairs_per_source=per_source * 20, token=token):
+    for src, hi, en in iter_parallel(sources, max_pairs_per_source=per_source * 5, token=token):
         if not clean_sentence_ok(hi, lang="hi"):
             continue
         seen_counts[src] += 1

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -74,16 +75,18 @@ class TransliterationModel(nn.Module):
         self.src_emb = nn.Embedding(cfg.src_vocab_size, cfg.d_model, padding_idx=PAD)
         self.tgt_emb = nn.Embedding(cfg.tgt_vocab_size, cfg.d_model, padding_idx=PAD)
         self.pos_emb = nn.Embedding(cfg.max_len + 2, cfg.d_model)
-        self.transformer = nn.Transformer(
-            d_model=cfg.d_model,
-            nhead=cfg.nhead,
-            num_encoder_layers=cfg.num_encoder_layers,
-            num_decoder_layers=cfg.num_decoder_layers,
-            dim_feedforward=cfg.dim_feedforward,
-            dropout=cfg.dropout,
-            batch_first=True,
-            norm_first=True,
-        )
+        with warnings.catch_warnings():  # nested-tensor fast path is unused with norm_first
+            warnings.simplefilter("ignore", UserWarning)
+            self.transformer = nn.Transformer(
+                d_model=cfg.d_model,
+                nhead=cfg.nhead,
+                num_encoder_layers=cfg.num_encoder_layers,
+                num_decoder_layers=cfg.num_decoder_layers,
+                dim_feedforward=cfg.dim_feedforward,
+                dropout=cfg.dropout,
+                batch_first=True,
+                norm_first=True,
+            )
         self.out = nn.Linear(cfg.d_model, cfg.tgt_vocab_size)
         self.scale = math.sqrt(cfg.d_model)
 

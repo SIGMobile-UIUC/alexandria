@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alexandria-models"
+version = "0.1.0"
+description = "Training and inference for the Alexandria Hindi learning app's models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.3",
+    "transformers>=5.0",
+    "safetensors>=0.4",
+    "sentencepiece>=0.2",
+]
+
+[project.optional-dependencies]
+# Everything needed to prepare data and train (Colab).
+train = [
+    "datasets>=4.0",
+    "huggingface_hub>=0.30",
+    "peft>=0.17",
+    "accelerate>=1.0",
+    "bitsandbytes>=0.45; platform_system == 'Linux'",
+    "wordfreq>=3.1",
+]
+# Everything needed to serve the models from the FastAPI backend.
+serve = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "peft>=0.17",
+]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+include = ["alexandria_models*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end pipeline test (trains tiny models, ~1-3 min on CPU)"]
+pythonpath = ["tests"]

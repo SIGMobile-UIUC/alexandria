@@ -67,13 +67,14 @@ class FrequencyTable:
     def most_common(self, n: int) -> list[tuple[str, int]]:
         return sorted(self.counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
 
-    def save(self, path: str | Path, min_count: int = 2) -> None:
+    def save(self, path: str | Path, max_words: int = 500_000) -> None:
+        """Save the ``max_words`` most frequent words. Ranks of saved words are unchanged
+        on reload; dropped words rank beyond ``max_words`` either way, which is past any
+        sensible ``rank_cap``, so scores do not change."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(path, "wt", encoding="utf-8") as f:
-            for w, c in self.most_common(len(self.counts)):
-                if c < min_count:
-                    break
+            for w, c in self.most_common(max_words):
                 f.write(f"{w}\t{c}\n")
 
     @classmethod

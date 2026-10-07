@@ -24,7 +24,8 @@ from ..common.io import resolve_device
 from ..common.text import normalize
 from .model import PAD, load_model
 
-_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*|[ऀ-ॣॱ-ॿ]+|[0-9०-९]+|\S")
+_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)*|[ऀ-ॣॱ-ॿ]+|[0-9०-९]+(?:[.,:][0-9०-९]+)*|\.{2,}|\S")
+_DEV_WORD_RE = re.compile(r"[ऀ-ॣॱ-ॿ]")  # excludes the dandas ।॥
 _LATIN_RE = re.compile(r"^[A-Za-z]+(?:'[A-Za-z]+)*$")
 _NO_SPACE_BEFORE = set(".,!?;:)।॥")
 
@@ -100,13 +101,18 @@ class Transliterator:
 
         k = k or self.word_beam
         max_len = self.model.cfg.max_len
+        # Words too long for the model are returned unchanged rather than cut short.
+        long_words = {i for i, w in enumerate(words) if len(w) >= max_len - 1}
         src = [self.src_vocab.encode(w.lower(), max_len) for w in words]
         S = max(map(len, src))
         src_t = torch.tensor([s + [PAD] * (S - len(s)) for s in src], device=self.device)
         with self._lock:
             hyps = self.model.beam_search(src_t, beam_size=k, max_len=max_len)
         out = []
-        for row in hyps:
+        for i, row in enumerate(hyps):
+            if i in long_words:
+                out.append([(words[i], -10.0)])
+                continue
             seen: dict[str, float] = {}
             for ids, score in row:
                 text = normalize(self.tgt_vocab.decode(ids))
@@ -126,19 +132,21 @@ class Transliterator:
 
         # Beam over the sentence: (score, tokens, last Devanagari word)
         beams: list[tuple[float, list[str], str | None]] = [(0.0, [], None)]
-        for tok in tokens:
+        for pos, tok in enumerate(tokens):
             if _LATIN_RE.match(tok):
                 options = cands.get(tok.lower()) or [(tok, -10.0)]
             else:
-                options = [("।" if tok == "." else tok, 0.0)]
+                final_dot = tok == "." and pos == len(tokens) - 1
+                options = [("।" if final_dot else tok, 0.0)]
             new = []
             for score, toks, prev in beams:
                 for cand, lp in options:
                     s = score + lp
-                    is_word = bool(re.match(r"[ऀ-ॿ]", cand))
+                    is_word = bool(_DEV_WORD_RE.match(cand))
                     if self.lm is not None and is_word:
                         s += self.lm_weight * self.lm.logp(cand, prev)
-                    new.append((s, toks + [cand], cand if is_word else prev))
+                    nxt = cand if is_word else (None if cand in ("।", "?", "!") else prev)
+                    new.append((s, toks + [cand], nxt))
             new.sort(key=lambda b: -b[0])
             beams = new[: self.sentence_beam]
 

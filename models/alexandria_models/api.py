@@ -23,7 +23,7 @@ from typing import Literal
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .inference import AlexandriaModels
+from .inference import AlexandriaModels, ModelNotLoaded
 
 router = APIRouter(tags=["models"])
 
@@ -34,21 +34,21 @@ class SentencesRequest(BaseModel):
     word: str | None = Field(default=None, description="Hindi word the sentences must contain")
     grammar: str | None = Field(default=None, description="construction name, see GET /levels")
     mode: Literal["auto", "bank", "generate"] = "auto"
-    exclude: list[str] = Field(default_factory=list, description="Hindi sentences already shown")
+    exclude: list[str] = Field(default_factory=list, max_length=500, description="Hindi sentences already shown")
 
 
 class DifficultyRequest(BaseModel):
-    sentence: str = Field(min_length=1)
+    sentence: str = Field(min_length=1, max_length=500)
 
 
 class EvaluateRequest(BaseModel):
-    source: str = Field(min_length=1, description="sentence shown to the learner")
-    answer: str = Field(description="learner's translation (Hindi may be romanized)")
+    source: str = Field(min_length=1, max_length=500, description="sentence shown to the learner")
+    answer: str = Field(max_length=500, description="learner's translation (Hindi may be romanized)")
     source_lang: Literal["hi", "en"] | None = None
 
 
 class TransliterateRequest(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=500)
     k: int = Field(default=3, ge=1, le=10)
 
 
@@ -64,7 +64,7 @@ def _call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    except RuntimeError as e:  # a model that is not loaded
+    except ModelNotLoaded as e:
         raise HTTPException(503, str(e)) from e
 
 

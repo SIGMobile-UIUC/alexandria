@@ -111,9 +111,8 @@ def load_dakshina(cache_dir: Path) -> dict[str, list]:
                         rows.append(p)
         return rows
 
-    base = target / "hi.romanized.rejoined.dev"
-    roman_lines = base.with_suffix(".roman.txt").read_text(encoding="utf-8").splitlines()
-    native_lines = base.with_suffix(".native.txt").read_text(encoding="utf-8").splitlines()
+    roman_lines = (target / "hi.romanized.rejoined.dev.roman.txt").read_text(encoding="utf-8").splitlines()
+    native_lines = (target / "hi.romanized.rejoined.dev.native.txt").read_text(encoding="utf-8").splitlines()
     out = {
         "train": lex("train"),
         "dev": lex("dev"),

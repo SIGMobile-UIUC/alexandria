@@ -28,10 +28,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .common.io import get_logger, read_jsonl
-from .common.text import normalize
+from .common.text import normalize, tokenize
 
 log = get_logger("inference")
 COMPONENTS = ("difficulty", "generator", "evaluator", "transliterator")
+
+
+class ModelNotLoaded(RuntimeError):
+    """A feature was requested whose model is not loaded (the API maps this to 503)."""
 
 
 class SentenceBank:
@@ -40,6 +44,10 @@ class SentenceBank:
     def __init__(self, rows: Iterable[dict]):
         self.by_level: dict[int, list[dict]] = defaultdict(list)
         for r in rows:
+            hi, en = r.get("hi") or r.get("hindi"), r.get("en") or r.get("english")
+            if not hi or not en or r.get("level") is None:
+                continue
+            r = {**r, "hi": hi, "en": en, "_tokens": frozenset(tokenize(hi))}
             self.by_level[int(r["level"])].append(r)
 
     @classmethod
@@ -58,7 +66,7 @@ class SentenceBank:
         rng = rng or random
         pool = [
             r for r in self.by_level.get(level, [])
-            if (not word or word in r["hi"])
+            if (not word or word in r["_tokens"])
             and (not grammar or grammar in r.get("constructions", []))
             and (not exclude or r["hi"] not in exclude)
         ]
@@ -79,8 +87,16 @@ class AlexandriaModels:
         self.bank = bank or SentenceBank([])
 
     @classmethod
-    def load(cls, artifacts_dir: str | Path, components: Iterable[str] = COMPONENTS, device: str = "auto") -> "AlexandriaModels":
+    def load(cls, artifacts_dir: str | Path, components: Iterable[str] | None = None, device: str = "auto") -> "AlexandriaModels":
+        """Load every available component. By default the generator is loaded only when a
+        GPU is used: on CPU it is slow and needs ~7 GB RAM, so serve the pre-generated
+        bank instead (pass components=COMPONENTS to force it)."""
+        from .common.io import resolve_device
+
         root = Path(artifacts_dir)
+        if components is None:
+            gpu = resolve_device(device) == "cuda"
+            components = [c for c in COMPONENTS if gpu or c != "generator"]
         components = set(components)
         unknown = components - set(COMPONENTS)
         if unknown:
@@ -91,7 +107,7 @@ class AlexandriaModels:
 
             scorer = DifficultyScorer.load(root / "difficulty")
             log.info("loaded difficulty scorer (%d levels)", scorer.config.num_levels)
-        if "evaluator" in components and (root / "evaluator").exists():
+        if "evaluator" in components and (root / "evaluator" / "model" / "config.json").exists():
             from .evaluator.score import TranslationEvaluator
 
             evaluator = TranslationEvaluator.load(root / "evaluator", device=device)
@@ -154,23 +170,27 @@ class AlexandriaModels:
         if len(out) < n and mode in ("auto", "generate"):
             if self.generator is None:
                 if mode == "generate":
-                    raise RuntimeError("generator model is not loaded")
+                    raise ModelNotLoaded("generator model is not loaded")
             else:
                 excluded |= {s["hindi"] for s in out}
-                out += self.generator.generate(level, n - len(out), word=word, grammar=grammar, exclude=excluded)
+                out += self.generator.generate(level, min(n - len(out), 10), word=word, grammar=grammar, exclude=excluded)
         return out
 
     def difficulty(self, sentence: str) -> dict[str, Any]:
         if self.scorer is None:
-            raise RuntimeError("difficulty scorer is not loaded")
+            raise ModelNotLoaded("difficulty scorer is not loaded")
         return self.scorer.analyze(sentence)
 
     def evaluate(self, source: str, answer: str, source_lang: str | None = None) -> dict[str, Any]:
         if self.evaluator is None:
-            raise RuntimeError("evaluator model is not loaded")
+            raise ModelNotLoaded("evaluator model is not loaded")
+        from .common.text import is_devanagari, is_latin
+
+        if self.transliterator is None and source_lang != "hi" and not is_devanagari(source) and is_latin(answer, 0.5):
+            raise ModelNotLoaded("transliterator is not loaded, so romanized Hindi answers cannot be scored")
         return self.evaluator.evaluate(source, answer, source_lang, self.transliterator)
 
     def transliterate(self, text: str, k: int = 3) -> list[str]:
         if self.transliterator is None:
-            raise RuntimeError("transliterator model is not loaded")
+            raise ModelNotLoaded("transliterator model is not loaded")
         return self.transliterator.transliterate(text, k=k)

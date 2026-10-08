@@ -106,6 +106,11 @@ def _nan_guard_callback():
 
 
 def train(args: argparse.Namespace) -> Path:
+    if args.merge_only:  # adapter already trained; just (re)build merged/
+        out = Path(args.output_dir)
+        cfg = read_json(out / CONFIG_FILE)
+        merge_adapter(out, args.base_model or cfg["base_model"], args.hf_token)
+        return out
     import torch
     from datasets import Dataset
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -320,6 +325,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--no_4bit", action="store_true", help="train in fp16 without quantization")
     p.add_argument("--fp32", action="store_true", help="disable fp16 mixed precision (use if loss becomes NaN)")
     p.add_argument("--no_merge", action="store_true", help="skip writing the merged model")
+    p.add_argument("--merge_only", action="store_true", help="skip training; merge the saved adapter into the base model")
     p.add_argument("--resume", action="store_true", help="resume from the latest checkpoint in output_dir")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args(argv)

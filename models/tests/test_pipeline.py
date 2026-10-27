@@ -20,7 +20,8 @@ pytestmark = pytest.mark.slow
 def artifacts(tmp_path_factory, hindi_corpus_file, tiny_causal_lm, tiny_encoder) -> Path:
     from alexandria_models.difficulty import build as difficulty_build
     from alexandria_models.evaluator import prepare_data as eval_data, train as eval_train
-    from alexandria_models.generator import prepare_data as gen_data, train as gen_train
+    from alexandria_models.generator import generate as gen_generate, prepare_data as gen_data, train as gen_train
+    from alexandria_models.naturalness import label_llm, prepare_data as nat_data, train as nat_train
     from alexandria_models.transliterator import prepare_data as tr_data, train as tr_train
 
     root = tmp_path_factory.mktemp("run")
@@ -30,16 +31,39 @@ def artifacts(tmp_path_factory, hindi_corpus_file, tiny_causal_lm, tiny_encoder)
     difficulty_build.main([
         "--output_dir", str(art / "difficulty"), "--mono_sources", str(hindi_corpus_file),
         "--parallel_sources", par, "--reference_per_source", "100", "--rank_cap", "300",
-        "--min_stem_count", "2",
+        "--min_stem_count", "2", "--spoken_sources", par,
     ])
+    # naturalness: weak labels -> LLM judge (tiny random LM) -> classifier
+    nat_data.main(["--output_dir", str(data / "naturalness"), "--sources", par, "--judge_sample", "30"])
+    label_llm.main(["--input", str(data / "naturalness" / "to_judge.jsonl"),
+                    "--output", str(data / "naturalness" / "judged.jsonl"), "--model", str(tiny_causal_lm),
+                    "--batch_size", "8", "--limit", "20"])
+    label_llm.main(["--input", str(data / "naturalness" / "to_judge.jsonl"),  # resumes: judges the rest
+                    "--output", str(data / "naturalness" / "judged.jsonl"), "--model", str(tiny_causal_lm)])
+    nat_train.main(["--data_dir", str(data / "naturalness"), "--output_dir", str(art / "naturalness"),
+                    "--base_model", str(tiny_encoder), "--max_steps", "3", "--batch_size", "8", "--eval_steps", "2"])
+
     gen_data.main([
         "--difficulty_dir", str(art / "difficulty"), "--output_dir", str(data / "generator"),
-        "--sources", par, "--per_level", "10",
+        "--sources", par, "--per_level", "10", "--naturalness_dir", str(art / "naturalness"),
+        "--min_naturalness", "0.0",
     ])
     gen_train.main([
-        "--data_dir", str(data / "generator"), "--output_dir", str(art / "generator"),
+        "--data_dir", str(data / "generator"), "--output_dir", str(root / "generator_v1"),
         "--base_model", str(tiny_causal_lm), "--max_steps", "3", "--batch_size", "4", "--grad_accum", "1",
-        "--eval_steps", "2", "--logging_steps", "1",
+        "--eval_steps", "2", "--logging_steps", "1", "--no_merge",
+    ])
+    # v2: continue from the earlier adapter, then merge
+    gen_train.main([
+        "--data_dir", str(data / "generator"), "--output_dir", str(art / "generator"),
+        "--base_model", str(tiny_causal_lm), "--max_steps", "2", "--batch_size", "4", "--grad_accum", "1",
+        "--eval_steps", "2", "--logging_steps", "1", "--init_adapter", str(root / "generator_v1" / "adapter"),
+    ])
+    gen_generate.main([
+        "--generator_dir", str(art / "generator"), "--difficulty_dir", str(art / "difficulty"),
+        "--naturalness_dir", str(art / "naturalness"), "--levels", "1-2", "--fill_to", "1",
+        "--bank", str(art / "generator" / "sentence_bank.jsonl"), "--out", str(root / "generated.jsonl"),
+        "--device", "cpu",
     ])
     eval_data.main([
         "--output_dir", str(data / "evaluator"), "--no_wmt", "--parallel_sources", par, "--synthetic_pairs", "60",
@@ -57,7 +81,29 @@ def artifacts(tmp_path_factory, hindi_corpus_file, tiny_causal_lm, tiny_encoder)
         "--epochs", "2", "--batch_size", "16", "--d_model", "32", "--nhead", "2", "--layers", "1",
         "--log_every", "1",
     ])
+    from alexandria_models.evaluator import diagnose, label_sheet
+
+    diagnose.main(["--evaluator_dir", str(art / "evaluator"), "--pairs", str(art / "generator" / "sentence_bank.jsonl"),
+                   "--n_pairs", "10", "--out", str(root / "reports" / "diag.json"), "--device", "cpu"])
+    sheet = root / "sheet" / "label_sheet.csv"
+    label_sheet.main(["make", "--pairs", par, "--out", str(sheet), "--n", "20"])
+    lines = sheet.read_text(encoding="utf-8-sig").splitlines()
+    filled = [lines[0]] + [ln.replace(",,", ",3,", 1) for ln in lines[1:]]  # pretend the team scored them
+    sheet.write_text("\n".join(filled) + "\n", encoding="utf-8-sig")
+    label_sheet.main(["score", "--sheet", str(sheet), "--evaluator_dir", str(art / "evaluator"),
+                      "--export", str(root / "test_learner.jsonl"), "--device", "cpu"])
     return art
+
+
+def test_v2_reports(artifacts):
+    root = artifacts.parent
+    diag = json.loads((root / "reports" / "diag.json").read_text())
+    assert "negation" in diag["by_error_type"]["hi"] and diag["pairs"] == 10
+    assert sum(1 for _ in open(root / "test_learner.jsonl")) >= 10
+    judged = [json.loads(x) for x in open(root / "data" / "naturalness" / "judged.jsonl")]
+    assert len({r["id"] for r in judged}) == len(judged) >= 20 and all(0 <= r["label"] <= 1 for r in judged)
+    bank = [json.loads(x) for x in open(artifacts / "generator" / "sentence_bank.jsonl")]
+    assert bank and all("naturalness" in r for r in bank)
 
 
 def test_artifacts_written(artifacts):
@@ -65,7 +111,9 @@ def test_artifacts_written(artifacts):
     assert (artifacts / "difficulty" / "word_freq.tsv.gz").exists()
     assert (artifacts / "difficulty" / "bigram_freq.tsv.gz").exists()
     cfg = json.loads((artifacts / "generator" / "generator_config.json").read_text())
-    assert cfg["merged"] and cfg["num_levels"] == 20
+    assert cfg["merged"] and cfg["num_levels"] == 50
+    assert (artifacts / "naturalness" / "model" / "config.json").exists()
+    assert (artifacts / "difficulty" / "spoken_freq.tsv.gz").exists()
     assert (artifacts / "generator" / "merged" / "config.json").exists()
     assert (artifacts / "generator" / "adapter" / "adapter_config.json").exists()
     assert (artifacts / "generator" / "sentence_bank.jsonl").exists()
@@ -79,8 +127,8 @@ def test_inference(artifacts):
     assert AlexandriaModels.load(artifacts, device="cpu").generator is None  # CPU default skips it
     m = AlexandriaModels.load(artifacts, components=COMPONENTS, device="cpu")
     status = m.status()
-    assert all(status[k] for k in ("difficulty", "generator", "evaluator", "transliterator"))
-    assert status["num_levels"] == 20 and status["sentence_bank"] > 0
+    assert all(status[k] for k in ("difficulty", "generator", "evaluator", "transliterator", "naturalness"))
+    assert status["num_levels"] == 50 and status["sentence_bank"] > 0
 
     level = next(iter(m.bank.by_level))
     got = m.sentences(level=level, n=2, mode="bank")
@@ -94,7 +142,7 @@ def test_inference(artifacts):
     assert r["romanized"] and r["source_lang"] == "en" and r["readings"]
     assert isinstance(m.transliterate("main ghar ja raha hoon", k=2), list)
     d = m.difficulty("यह पत्र मेरे दादाजी द्वारा लिखा गया था।")
-    assert 1 <= d["level"] <= 20 and "passive" in d["constructions"]
+    assert 1 <= d["level"] <= 50 and "passive" in d["constructions"]
 
 
 def test_api(artifacts):
@@ -105,7 +153,7 @@ def test_api(artifacts):
     with TestClient(create_app(str(artifacts), device="cpu")) as client:
         assert client.get("/health").json()["evaluator"] is True
         levels = client.get("/levels").json()
-        assert levels["num_levels"] == 20 and levels["constructions"]
+        assert levels["num_levels"] == 50 and levels["constructions"]
         level = levels["levels"][0]["level"]
         r = client.post("/sentences", json={"level": level, "n": 1, "mode": "bank"})
         assert r.status_code == 200

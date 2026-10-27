@@ -30,7 +30,8 @@ import numpy as np
 
 from ..common.download import download
 from ..common.io import get_logger, write_json, write_jsonl
-from ..common.sources import DEFAULT_PARALLEL, good_pair, iter_parallel
+from ..common.quality import is_learner_sentence
+from ..common.sources import LEARNER_PARALLEL, good_pair, iter_parallel
 from ..common.text import normalize
 from .perturb import perturb
 
@@ -104,9 +105,16 @@ def human_rows(rows: list[dict], origin: str, both_directions: bool) -> list[dic
     return out
 
 
-def synthetic_rows(pairs: list[tuple[str, str]], rng: random.Random, negatives_per_pair: int = 2) -> list[dict]:
-    """For each (hi, en) pair and each direction: the correct answer, perturbed answers and a mismatch."""
+def synthetic_rows(pairs: list[tuple[str, str]], rng: random.Random, negatives_per_pair: int = 2,
+                   alternatives: dict[str, list[str]] | None = None) -> list[dict]:
+    """For each (hi, en) pair and each direction: the correct answer, perturbed answers and a
+    mismatch. ``alternatives`` maps a Hindi sentence to other correct English translations
+    (paraphrases), which must score as high as the reference."""
     rows: list[dict] = []
+    for hi, alts in (alternatives or {}).items():
+        for alt in alts[:2]:
+            rows.append({"source": hi, "translation": alt, "label": 1.0, "source_lang": "hi", "origin": "synthetic_paraphrase"})
+            rows.append({"source": alt, "translation": hi, "label": 1.0, "source_lang": "en", "origin": "synthetic_paraphrase"})
     by_len: dict[int, list[int]] = {}
     for i, (hi, _) in enumerate(pairs):
         by_len.setdefault(min(len(hi.split()), 30), []).append(i)
@@ -162,18 +170,33 @@ def prepare(args: argparse.Namespace) -> Path:
         except Exception as e:  # noqa: BLE001
             log.warning("could not load WMT23 QE data (%s: %s); training on synthetic data only", type(e).__name__, e)
 
-    pairs: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    # Learner-like sentences (complete, everyday) make up most synthetic pairs; a share of
+    # other corpus sentences keeps the model robust to anything a user may type.
+    learner: list[tuple[str, str]] = []
+    other: list[tuple[str, str]] = []
+    first_en: dict[str, str] = {}
+    alternatives: dict[str, list[str]] = {}
     sources = [s for s in args.parallel_sources.split(",") if s]
     for _, hi, en in iter_parallel(sources, args.max_pairs_per_source, args.hf_token):
-        if hi not in seen and good_pair(hi, en):
-            seen.add(hi)
-            pairs.append((hi, en))
+        if not good_pair(hi, en):
+            continue
+        if hi in first_en:  # same Hindi, another English translation: a paraphrase
+            if en.lower().strip(" .!?") != first_en[hi].lower().strip(" .!?") and en not in alternatives.get(hi, []):
+                alternatives.setdefault(hi, []).append(en)
+            continue
+        first_en[hi] = en
+        (learner if is_learner_sentence(hi, en) else other).append((hi, en))
+    rng.shuffle(learner)
+    rng.shuffle(other)
+    n_learner = min(len(learner), int(args.synthetic_pairs * args.learner_share))
+    pairs = learner[:n_learner] + other[: args.synthetic_pairs - n_learner]
     rng.shuffle(pairs)
-    pairs = pairs[: args.synthetic_pairs]
     n_val = max(1, len(pairs) // 20) if len(pairs) >= 20 else 0
-    synth_val = synthetic_rows(pairs[:n_val], rng)
-    synth_train = synthetic_rows(pairs[n_val:], rng)
+    val_his = {hi for hi, _ in pairs[:n_val]}
+    synth_val = synthetic_rows(pairs[:n_val], rng, alternatives={h: a for h, a in alternatives.items() if h in val_his})
+    synth_train = synthetic_rows(pairs[n_val:], rng,
+                                 alternatives={h: a for h, a in alternatives.items() if h not in val_his})
+    info["paraphrase_groups"] = len(alternatives)
     train += synth_train
     rng.shuffle(train)
     info.update(
@@ -198,7 +221,9 @@ def prepare(args: argparse.Namespace) -> Path:
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output_dir", required=True)
-    p.add_argument("--parallel_sources", default=",".join(DEFAULT_PARALLEL))
+    p.add_argument("--parallel_sources", default=",".join(LEARNER_PARALLEL))
+    p.add_argument("--learner_share", type=float, default=0.8,
+                   help="share of synthetic pairs that are complete, learner-style sentences")
     p.add_argument("--max_pairs_per_source", type=int, default=20_000)
     p.add_argument("--synthetic_pairs", type=int, default=12_000, help="parallel pairs turned into synthetic examples")
     p.add_argument("--human_repeat", type=int, default=2, help="upsample the human-scored WMT rows")

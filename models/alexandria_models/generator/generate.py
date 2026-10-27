@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import argparse
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..common.io import get_logger, read_json, resolve_device, write_jsonl
+from ..common.io import get_logger, read_json, read_jsonl, resolve_device, write_jsonl
 from ..common.text import clean_sentence_ok, normalize
+from ..common.quality import learner_issues, tidy_hindi
 from ..common.text import tokenize
 from .prompts import bos_prefix, build_prompt, parse_completion
 
@@ -38,12 +40,14 @@ class SentenceGenerator:
         scorer: "DifficultyScorer | None" = None,
         evaluator: "TranslationEvaluator | None" = None,
         device: str = "cpu",
+        naturalness=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.num_levels = num_levels
         self.scorer = scorer
         self.evaluator = evaluator
+        self.naturalness = naturalness
         self.device = device
         self._lock = threading.Lock()
         self.max_seq_len = 192
@@ -56,6 +60,7 @@ class SentenceGenerator:
         evaluator: "TranslationEvaluator | None" = None,
         device: str = "auto",
         dtype: str = "auto",
+        naturalness=None,
     ) -> "SentenceGenerator":
         """Load ``generator_dir/merged`` (or base model + ``adapter`` if not merged)."""
         import torch
@@ -81,7 +86,7 @@ class SentenceGenerator:
             tok.pad_token = tok.eos_token
         tok.padding_side = "left"  # decoder-only batched generation pads on the left
         model.to(device).eval()
-        gen = cls(model, tok, int(cfg["num_levels"]), scorer, evaluator, device)
+        gen = cls(model, tok, int(cfg["num_levels"]), scorer, evaluator, device, naturalness)
         gen.max_seq_len = int(cfg.get("max_seq_len", 192))
         return gen
 
@@ -124,6 +129,7 @@ class SentenceGenerator:
         max_rounds: int = 3,
         level_tolerance: int = 2,
         min_translation_score: float = 0.5,
+        min_naturalness: float = 0.5,
         exclude: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Return up to ``n`` distinct, validated sentences near ``level``.
@@ -150,10 +156,12 @@ class SentenceGenerator:
                 parsed = parse_completion(t)
                 if not parsed:
                     continue
-                hi, en = normalize(parsed[0]), normalize(parsed[1])
+                hi, en = tidy_hindi(parsed[0]), normalize(parsed[1])
                 if hi in seen or not clean_sentence_ok(hi, lang="hi") or not clean_sentence_ok(en, lang="en"):
                     continue
                 if word and word not in tokenize(hi):
+                    continue
+                if learner_issues(hi, en):
                     continue
                 seen.add(hi)
                 item: dict[str, Any] = {"hindi": hi, "english": en, "requested_level": level}
@@ -163,6 +171,10 @@ class SentenceGenerator:
                         continue
                     item.update(level=analysis["level"], difficulty=analysis)
                 cands.append(item)
+            if self.naturalness is not None and cands:
+                for c, s in zip(cands, self.naturalness.score_batch([c["hindi"] for c in cands])):
+                    c["naturalness"] = s
+                cands = [c for c in cands if c["naturalness"] >= min_naturalness]
             if self.evaluator is not None and cands:
                 scores = self.evaluator.score_batch([c["hindi"] for c in cands], [c["english"] for c in cands])
                 for c, s in zip(cands, scores):
@@ -174,13 +186,27 @@ class SentenceGenerator:
         return results[:n]
 
 
+def parse_levels(spec: str | None, num_levels: int) -> list[int]:
+    if not spec:
+        return list(range(1, num_levels + 1))
+    out: list[int] = []
+    for part in spec.split(","):
+        a, _, b = part.partition("-")
+        out += list(range(int(a), int(b or a) + 1))
+    return [x for x in out if 1 <= x <= num_levels]
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--generator_dir", required=True)
     p.add_argument("--difficulty_dir", default=None)
     p.add_argument("--evaluator_dir", default=None)
+    p.add_argument("--naturalness_dir", default=None)
     p.add_argument("--per_level", type=int, default=50)
-    p.add_argument("--levels", default=None, help="comma-separated subset, default all")
+    p.add_argument("--levels", default=None, help="subset like '1-12' or '1,2,5'; default all")
+    p.add_argument("--fill_to", type=int, default=None,
+                   help="per level, generate only what --bank lacks to reach this many sentences")
+    p.add_argument("--bank", default=None, help="sentence_bank.jsonl to count for --fill_to")
     p.add_argument("--out", required=True)
     p.add_argument("--device", default="auto")
     args = p.parse_args(argv)
@@ -194,17 +220,29 @@ def main(argv=None) -> None:
         from ..evaluator.score import TranslationEvaluator
 
         evaluator = TranslationEvaluator.load(args.evaluator_dir, device=args.device)
-    gen = SentenceGenerator.load(args.generator_dir, scorer, evaluator, device=args.device)
-    levels = [int(x) for x in args.levels.split(",")] if args.levels else range(1, gen.num_levels + 1)
+    naturalness = None
+    if args.naturalness_dir:
+        from ..naturalness.score import NaturalnessModel
+
+        naturalness = NaturalnessModel.load(args.naturalness_dir, device=args.device)
+    gen = SentenceGenerator.load(args.generator_dir, scorer, evaluator, device=args.device, naturalness=naturalness)
+    levels = parse_levels(args.levels, gen.num_levels)
+    have: Counter = Counter()
+    if args.fill_to and args.bank:
+        have.update(int(r["level"]) for r in read_jsonl(args.bank))
     rows = []
     for level in levels:
-        got = gen.generate(level, n=args.per_level, max_rounds=6)
+        n = max(0, args.fill_to - have[level]) if args.fill_to else args.per_level
+        if n == 0:
+            continue
+        got = gen.generate(level, n=n, max_rounds=6)
         log.info("level %d: %d sentences", level, len(got))
         # Same schema as sentence_bank.jsonl so SentenceBank can serve it.
         rows.extend(
             {"hi": r["hindi"], "en": r["english"], "level": r.get("level", r["requested_level"]),
              "score": r.get("difficulty", {}).get("score"),
-             "constructions": r.get("difficulty", {}).get("constructions", []), "source": "generated"}
+             "constructions": r.get("difficulty", {}).get("constructions", []), "source": "generated",
+             **({"naturalness": r["naturalness"]} if "naturalness" in r else {})}
             for r in got
         )
     write_jsonl(args.out, rows)

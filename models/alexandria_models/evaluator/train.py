@@ -196,6 +196,11 @@ def train(args: argparse.Namespace) -> Path:
     if test is not None:
         test_metrics = trainer.evaluate(test, metric_key_prefix="test_human")
         log.info("held-out human test: %s", test_metrics)
+    learner = load("test_learner")  # your team's scored answers (evaluator.label_sheet --export)
+    if learner is not None:
+        learner_metrics = trainer.evaluate(learner, metric_key_prefix="test_learner")
+        test_metrics.update(learner_metrics)
+        log.info("learner answers scored by your team: %s", learner_metrics)
     write_json(
         out / CONFIG_FILE,
         {"base_model": args.base_model, "max_len": args.max_len, "metrics": {**metrics, **test_metrics}},

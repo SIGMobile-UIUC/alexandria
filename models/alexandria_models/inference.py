@@ -18,6 +18,7 @@ Expected layout (each part is optional; missing parts are skipped)::
       generator/        generator.train (merged/ + sentence_bank.jsonl)
       evaluator/        evaluator.train
       transliterator/   transliterator.train
+      naturalness/      naturalness.train (v2; filters generated sentences)
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from .common.io import get_logger, read_jsonl
 from .common.text import normalize, tokenize
 
 log = get_logger("inference")
-COMPONENTS = ("difficulty", "generator", "evaluator", "transliterator")
+COMPONENTS = ("difficulty", "generator", "evaluator", "transliterator", "naturalness")
 
 
 class ModelNotLoaded(RuntimeError):
@@ -79,7 +80,9 @@ class SentenceBank:
 
 
 class AlexandriaModels:
-    def __init__(self, scorer=None, generator=None, evaluator=None, transliterator=None, bank: SentenceBank | None = None):
+    def __init__(self, scorer=None, generator=None, evaluator=None, transliterator=None, bank: SentenceBank | None = None,
+                 naturalness=None):
+        self.naturalness = naturalness
         self.scorer = scorer
         self.generator = generator
         self.evaluator = evaluator
@@ -117,14 +120,21 @@ class AlexandriaModels:
 
             translit = Transliterator.load(root / "transliterator", difficulty_dir=root / "difficulty", device=device)
             log.info("loaded transliterator")
+        naturalness = None
+        if "naturalness" in components and (root / "naturalness" / "model" / "config.json").exists():
+            from .naturalness.score import NaturalnessModel
+
+            naturalness = NaturalnessModel.load(root / "naturalness", device=device)
+            log.info("loaded naturalness model")
         if "generator" in components and (root / "generator" / "generator_config.json").exists():
             from .generator.generate import SentenceGenerator
 
-            generator = SentenceGenerator.load(root / "generator", scorer, evaluator, device=device)
+            generator = SentenceGenerator.load(root / "generator", scorer, evaluator, device=device,
+                                               naturalness=naturalness)
             log.info("loaded generator")
         bank = SentenceBank.load(root / "generator" / "sentence_bank.jsonl", root / "generator" / "generated_bank.jsonl")
         log.info("sentence bank: %d sentences", len(bank))
-        return cls(scorer, generator, evaluator, translit, bank)
+        return cls(scorer, generator, evaluator, translit, bank, naturalness)
 
     # ------------------------------------------------------------------ info
     @property
@@ -146,6 +156,7 @@ class AlexandriaModels:
             "generator": self.generator is not None,
             "evaluator": self.evaluator is not None,
             "transliterator": self.transliterator is not None,
+            "naturalness": self.naturalness is not None,
             "sentence_bank": len(self.bank),
             "num_levels": self.num_levels,
         }

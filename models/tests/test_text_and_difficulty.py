@@ -117,3 +117,44 @@ def test_review_false_positives():
     assert "dative_subject" not in cons("मैं उसे जानता हूँ।")
     assert "dative_subject" in cons("उसे चाय पसंद है।")
     assert "relative_correlative" not in cons("वह शेर जैसा है।")
+
+
+def test_learner_filter_rejects_corpus_junk():
+    from alexandria_models.common.quality import learner_issues
+
+    assert learner_issues("मैं दूध पीता हूँ।", "I drink milk.") == []
+    assert learner_issues("क्या तुमने टॉम की मदद की?", "Did you help Tom?") == []
+    assert learner_issues("आपको यह काम कल तक ख़त्म करना पड़ेगा।", "You will have to finish this by tomorrow.") == []
+    # real bank rows from v1 that a teacher would never use
+    assert "no_predicate" in learner_issues("खाद्यान्न उत्पादन में विकास", "Growth in Foodgrain Production")
+    assert "en_title_case" in learner_issues("खाद्यान्न उत्पादन में विकास", "Growth in Foodgrain Production")
+    assert "no_predicate" in learner_issues("महोदय, कृपया, सर।", "Sir, please, sir.")
+    assert "digits" in learner_issues("घंटे का काम Vओलुन्टर्य् काम नही हो सकता है.", "Voluntary work. 16")
+    assert "religious" in learner_issues("अतः अल्लाह का डर रखो और मेरी आज्ञा का पालन करो।", "So fear Allah and obey me.")
+
+
+def test_absolute_levels_follow_vocab_grammar_and_length():
+    words = "यह घर है मैं ठीक हूँ मेरा पानी ठंडा दूध पीता हम कल जाएँगे तुम कहाँ जा रहे हो".split()
+    counts = Counter({w: 10_000 - i for i, w in enumerate(words)})
+    counts.update({f"शब्द{i}": 5 for i in range(30_000)})  # a long tail of rare words
+    counts["साम्राज्यवाद"] = 1
+    s = DifficultyScorer(FrequencyTable(counts), DifficultyConfig(num_levels=50, scheme="absolute"))
+    lv = {x: s.analyze(x)["level"] for x in [
+        "यह घर है।", "यह मेरा घर है।", "मैं दूध पीता हूँ।", "हम कल जाएँगे।", "यह साम्राज्यवाद है।",
+        "यह पत्र मेरे दादाजी द्वारा लिखा गया था।"]}
+    assert lv["यह घर है।"] == 1
+    assert lv["यह घर है।"] <= lv["यह मेरा घर है।"] < lv["मैं दूध पीता हूँ।"] < lv["हम कल जाएँगे।"]
+    assert lv["यह साम्राज्यवाद है।"] >= 35  # one rare word makes a short sentence hard
+    assert lv["यह पत्र मेरे दादाजी द्वारा लिखा गया था।"] >= 40  # passive
+    assert all(1 <= v <= 50 for v in lv.values())
+
+
+def test_absolute_scorer_roundtrip(tmp_path):
+    counts = Counter({"यह": 100, "घर": 50, "है": 90})
+    s = DifficultyScorer(FrequencyTable(counts), DifficultyConfig(num_levels=50, scheme="absolute"),
+                         spoken=FrequencyTable({"घर": 10, "है": 20}))
+    s.fit_levels(["यह घर है।", "यह घर है।"])
+    s.save(tmp_path)
+    t = DifficultyScorer.load(tmp_path)
+    assert t.config.scheme == "absolute" and sum(x["count"] for x in t.level_summaries) == 1  # deduplicated
+    assert t.analyze("यह घर है।") == s.analyze("यह घर है।")

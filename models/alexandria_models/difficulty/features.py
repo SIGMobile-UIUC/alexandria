@@ -91,7 +91,7 @@ PASSIVE_AUX = _set("जाता जाती जाते जाएगा ज�
 NOT_PASSIVE_PARTICIPLE = _set("चला भागा")
 CAUSATIVE_EXCLUDE = _set("दवाई हवाई कार्रवाई कार्यवाही गवाही रवाना")
 FORMAL_CONNECTIVES = _set(
-    "तथा एवं अथवा किंतु किन्तु परंतु परन्तु अतः अतएव यद्यपि तथापि हेतु द्वारा अंतर्गत अन्तर्गत "
+    "तथा एवं अथवा किंतु किन्तु परंतु परन्तु अतः अतएव यद्यपि तथापि हेतु अंतर्गत अन्तर्गत "
     "फलस्वरूप उपरांत उपरान्त पश्चात् पश्चात समक्ष संबंधी सम्बन्धी"
 )
 URDU_CONNECTIVES = _set("हालाँकि हालांकि बल्कि मगर बावजूद चूँकि चूंकि वरना")
@@ -366,7 +366,7 @@ CONSTRUCTIONS: tuple[Construction, ...] = (
     Construction("causative", 29, "-वा- causatives: लिखवाया", _causative),
     Construction("counterfactual", 30, "काश / अगर ... आते तो", _counterfactual),
     Construction("urdu_connective", 31, "हालाँकि/बल्कि/बावजूद", _vocab(URDU_CONNECTIVES)),
-    Construction("formal_register", 32, "तथा/एवं/अतः/द्वारा/हेतु", _vocab(FORMAL_CONNECTIVES)),
+    Construction("formal_register", 32, "तथा/एवं/अतः/हेतु", _vocab(FORMAL_CONNECTIVES)),
 )
 MAX_STEP = max(c.step for c in CONSTRUCTIONS)
 CONSTRUCTION_NAMES = tuple(c.name for c in CONSTRUCTIONS)

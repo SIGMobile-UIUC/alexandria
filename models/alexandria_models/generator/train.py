@@ -106,9 +106,14 @@ def _nan_guard_callback():
 
 
 def train(args: argparse.Namespace) -> Path:
+    if args.merge_only:  # adapter already trained; just (re)build merged/
+        out = Path(args.output_dir)
+        cfg = read_json(out / CONFIG_FILE)
+        merge_adapter(out, args.base_model or cfg["base_model"], args.hf_token)
+        return out
     import torch
     from datasets import Dataset
-    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig, Trainer, TrainingArguments
 
     set_seed(args.seed)
@@ -127,9 +132,11 @@ def train(args: argparse.Namespace) -> Path:
         shutil.copy(data_dir / "sentence_bank.jsonl", out / "sentence_bank.jsonl")
     cuda = torch.cuda.is_available()
     use_4bit = cuda and not args.no_4bit
-    use_fp16 = cuda and not args.fp32
-    log.info("base model %s | cuda=%s 4bit=%s fp16=%s batch=%dx%d max_len=%d",
-             base_model, cuda, use_4bit, use_fp16, batch_size, grad_accum, max_len)
+    # L4 / A100 support bfloat16, which cannot overflow like float16 on a T4.
+    use_bf16 = cuda and not args.fp32 and torch.cuda.is_bf16_supported()
+    use_fp16 = cuda and not args.fp32 and not use_bf16
+    log.info("base model %s | cuda=%s 4bit=%s fp16=%s bf16=%s batch=%dx%d max_len=%d",
+             base_model, cuda, use_4bit, use_fp16, use_bf16, batch_size, grad_accum, max_len)
 
     tokenizer = load_tokenizer(base_model, args.hf_token)
 
@@ -153,7 +160,7 @@ def train(args: argparse.Namespace) -> Path:
         val_ds = train_ds.select(range(min(len(train_ds), 200)))
     log.info("train=%d val=%d examples", len(train_ds), len(val_ds))
 
-    compute_dtype = torch.float16 if use_fp16 else torch.float32
+    compute_dtype = torch.bfloat16 if use_bf16 else torch.float16 if use_fp16 else torch.float32
     load_kwargs: dict = {"token": args.hf_token}
     if cuda:
         load_kwargs["attn_implementation"] = "sdpa"
@@ -188,7 +195,16 @@ def train(args: argparse.Namespace) -> Path:
         bias="none",
         task_type="CAUSAL_LM",
     )
-    model = get_peft_model(model, lora)
+    if args.init_adapter:
+        # Continue from an earlier run's adapter (same base model) instead of a fresh LoRA.
+        prev = read_json(Path(args.init_adapter) / "adapter_config.json").get("base_model_name_or_path")
+        if prev and prev != base_model:
+            raise SystemExit(f"--init_adapter was trained on {prev}, but the base model is {base_model}; "
+                             "use the same --preset/--base_model or drop --init_adapter")
+        model = PeftModel.from_pretrained(model, args.init_adapter, is_trainable=True)
+        log.info("continuing from adapter %s", args.init_adapter)
+    else:
+        model = get_peft_model(model, lora)
     # fp16 AMP needs fp32 master weights for the trainable (LoRA) parameters.
     for p in model.parameters():
         if p.requires_grad and p.dtype != torch.float32:
@@ -214,6 +230,7 @@ def train(args: argparse.Namespace) -> Path:
         logging_nan_inf_filter=False,  # let NaNGuard see overflowing losses
         train_sampling_strategy="group_by_length",
         fp16=use_fp16,
+        bf16=use_bf16,
         optim="paged_adamw_8bit" if use_4bit else "adamw_torch",
         logging_steps=args.logging_steps,
         eval_strategy="steps",
@@ -311,6 +328,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--lora_r", type=int, default=16)
     p.add_argument("--lora_alpha", type=int, default=32)
     p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--init_adapter", default=None, help="adapter/ dir of an earlier run to continue from")
     p.add_argument("--target_modules", default="all-linear")
     p.add_argument("--logging_steps", type=int, default=25)
     p.add_argument("--eval_steps", type=int, default=300, help="evaluate + checkpoint every N steps")
@@ -320,6 +338,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--no_4bit", action="store_true", help="train in fp16 without quantization")
     p.add_argument("--fp32", action="store_true", help="disable fp16 mixed precision (use if loss becomes NaN)")
     p.add_argument("--no_merge", action="store_true", help="skip writing the merged model")
+    p.add_argument("--merge_only", action="store_true", help="skip training; merge the saved adapter into the base model")
     p.add_argument("--resume", action="store_true", help="resume from the latest checkpoint in output_dir")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args(argv)

@@ -6,10 +6,34 @@ loads with one call.
 
 | Part | What it does | Model |
 |---|---|---|
-| **Difficulty scorer** | Grades any Hindi sentence into **20 levels** and names the grammar it uses | Rules + word frequencies from Hindi corpora (no GPU) |
+| **Difficulty scorer** | Grades any Hindi sentence into **50 levels** (v1: 20) and names the grammar it uses | Rules + word frequencies from web and spoken Hindi (no GPU) |
 | **Sentence generator** | Produces a Hindi sentence **and its English translation** at a requested level, optionally practising a given word or grammar construction | LoRA fine-tune of a free open-weight LLM (default Llama-3.2-3B) on English-Hindi parallel data |
 | **Translation evaluator** | Scores a learner's translation from 0 to 1, in both directions (Hindi→English and English→Hindi) | MuRIL cross-encoder trained on human quality scores + synthetic learner mistakes |
+| **Naturalness model** (v2) | Scores 0-1 whether a Hindi sentence is a natural, everyday sentence worth teaching; filters the training data, the sentence bank and generated sentences | MuRIL classifier trained on ratings from an open LLM (Qwen3-8B) |
 | **Transliterator** | Turns romanized Hindi ("main ghar ja raha hoon") into Devanagari (मैं घर जा रहा हूँ) so it can be scored | Small character-level Transformer trained from scratch, plus corpus word statistics for context |
+
+## Version 2
+
+v1 served many news headlines, fragments and scripture, because most parallel data is
+news, Wikipedia, software strings and religious text, and its level 1 was "the easiest 5%
+of that", still too hard for a beginner. v2 (`notebooks/train_colab_v2.ipynb`) changes:
+
+* **Learner filter** (`common/quality.py`): complete sentences only (a verb, final
+  punctuation), no digits, Latin letters, brackets, names-heavy news, scripture or
+  headlines. OPUS-100 and BPCC-MASSIVE (voice commands) are no longer used for learner text.
+* **Naturalness model** (`naturalness/`): an open LLM rates ~20k sentences for "would a
+  teacher use this?" and a small MuRIL model learns those ratings, then ranks everything.
+* **50 absolute levels** (`difficulty/scorer.py`, `scheme="absolute"`): a sentence's
+  level is set by its rarest words (ranked by spoken + web frequency, by word family),
+  its hardest grammar and its length. Level 1 is यह घर है।; levels the corpora barely
+  cover are filled by the generator (`generate --fill_to`).
+* **Generator** continues from the v1 adapter (`--init_adapter`) on the filtered data.
+* **Evaluator**: new learner mistakes (dropped ने, English word order, missing articles
+  and auxiliaries), paraphrases and harmless variants that must score ~1, continues from
+  the v1 model, `evaluator.diagnose` (scores per error type) and `evaluator.label_sheet`
+  (your team scores 200 answers; the real test for the app).
+
+v1 artifacts keep working: an old `scorer.json` loads with its 20 quantile levels.
 
 ## How the pieces fit together
 
@@ -139,7 +163,20 @@ A sentence's score combines:
 * **length**: number of words
 * **script**: conjunct consonants per word (स्वास्थ्य, प्रतिनिधित्व)
 
-The weights are in `DifficultyConfig`. Levels are equal-sized slices of the score
+**v2 (default, 50 levels, `scheme="absolute"`).** Each dimension maps to a level on its
+own and the sentence takes the highest, plus a little for the other two:
+
+* **vocabulary**: frequency rank of its rarest words, ranked by word family (पीता counts
+  as पीना) and blending spoken Hindi (subtitles, Tatoeba, BPCC-Daily) with web text. The
+  ~200 most common words are level 1, rank 500 is level 8, 1000 is 16, 4000 is 32.
+* **grammar**: the level at which its hardest construction is taught (`GRAMMAR_LEVELS_50`).
+* **length**: 3 words = level 1, 6 = 7, 10 = 15, 20 = 35.
+
+The anchors are tables at the top of `difficulty/scorer.py`; change them to move levels.
+Levels are not equally full: real corpora have few very easy sentences, which is why the
+v2 notebook generates sentences for the levels the bank lacks.
+
+**v1 (`scheme="quantile"`).** Levels are equal-sized slices of the score
 distribution over the training sentences, so each of the 20 levels gets the same amount of
 training data. `GET /levels` (or `scorer.level_summaries`) shows example sentences and the
 typical grammar for every level; this is the place to start when building the skill tree.
@@ -177,11 +214,12 @@ it logs and adjust the weights or the construction order.
 
 ```
 artifacts/
-  difficulty/      scorer.json, word_freq.tsv.gz, bigram_freq.tsv.gz, verb_stems.txt
+  difficulty/      scorer.json, word_freq.tsv.gz, spoken_freq.tsv.gz (v2), bigram_freq.tsv.gz, verb_stems.txt
   generator/       merged/ (full fp16 model), adapter/ (LoRA only), generator_config.json,
                    sentence_bank.jsonl, generated_bank.jsonl
   evaluator/       model/ (transformers model + tokenizer), evaluator_config.json
   transliterator/  model.pt, config.json, vocab.json
+  naturalness/     model/, naturalness_config.json (v2)
 ```
 
 ## Data sources
@@ -217,6 +255,11 @@ local file can also be used as a source: a `.txt` with one Hindi sentence per li
   only). Learner mistakes and the Hindi→English direction are covered by synthetic data, so
   treat scores as a guide. Thresholds like "≥0.8 = correct" should be calibrated on real
   learner answers.
+* **The naturalness model is only as good as its LLM judge.** Qwen3-8B's Hindi is decent,
+  not native. Read the highest- and lowest-rated sentences the notebook prints; a
+  stronger judge (`label_llm --model ...`) on an A100 is an easy upgrade.
+* **The absolute level anchors are hand-set.** Check the per-level examples after the
+  build and move the anchors if level 10 feels like level 20.
 * **Transliteration of informal romanization is hard.** The best published systems get
   ~60% of Hindi words exactly right on Dakshina. That is why the evaluator tries several
   readings. Expect this model to be somewhat below that.

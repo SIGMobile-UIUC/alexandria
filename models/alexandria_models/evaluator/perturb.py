@@ -181,6 +181,69 @@ def _en_case(text: str, rng: random.Random) -> tuple[str, float] | None:
     return (out, 1.0) if out != text else None
 
 
+# --------------------------------------------------------------------------- v2: learner errors and
+# harmless variants (a correct answer written differently must still score ~1).
+EN_CONTRACTIONS = [("I am", "I'm"), ("do not", "don't"), ("does not", "doesn't"), ("did not", "didn't"),
+                   ("is not", "isn't"), ("are not", "aren't"), ("cannot", "can't"), ("will not", "won't"),
+                   ("it is", "it's"), ("It is", "It's"), ("you are", "you're"), ("You are", "You're"),
+                   ("we are", "we're"), ("We are", "We're"), ("they are", "they're"), ("They are", "They're"),
+                   ("I will", "I'll"), ("I have", "I've"), ("That is", "That's"), ("that is", "that's")]
+HI_ERGATIVE_DROP = {normalize(a): normalize(b) for a, b in [("मैंने", "मैं"), ("तुमने", "तुम"), ("आपने", "आप"),
+                                                            ("हमने", "हम"), ("उसने", "वह"), ("उन्होंने", "वे")]}
+
+
+def _en_contract(text: str, rng: random.Random) -> tuple[str, float] | None:
+    cands = [(a, b) for a, b in EN_CONTRACTIONS if re.search(rf"\b{a}\b", text)]
+    cands += [(b, a) for a, b in EN_CONTRACTIONS if re.search(rf"\b{re.escape(b)}\b", text)]
+    if not cands:
+        return None
+    a, b = rng.choice(cands)
+    return re.sub(rf"\b{re.escape(a)}\b", b, text, count=1), 1.0
+
+
+def _en_article_drop(text: str, rng: random.Random) -> tuple[str, float] | None:
+    hits = list(re.finditer(r"\b(a|an|the)\s+", text))
+    if not hits:
+        return None
+    m = rng.choice(hits)
+    return text[: m.start()] + text[m.end():], 0.9
+
+
+def _en_aux_drop(text: str, rng: random.Random) -> tuple[str, float] | None:
+    m = re.search(r"\b(am|is|are|was|were)\s+(?=\w+ing\b)", text)
+    return (text[: m.start()] + text[m.end():], 0.75) if m else None
+
+
+def _hi_ne_drop(text: str, rng: random.Random) -> tuple[str, float] | None:
+    ws = _words(text)
+    idx = [i for i, w in enumerate(ws) if w in HI_ERGATIVE_DROP or w == "ने"]
+    if not idx:
+        return None
+    i = rng.choice(idx)
+    if ws[i] == "ने":
+        del ws[i]
+    else:
+        ws[i] = HI_ERGATIVE_DROP[ws[i]]
+    return _join(ws), 0.75
+
+
+def _hi_nasal_variant(text: str, rng: random.Random) -> tuple[str, float] | None:
+    """Chandrabindu vs. bindu (हूँ/हूं) is a spelling convention, not a mistake."""
+    out = text.replace("ँ", "ं") if "ँ" in text else None
+    return (out, 1.0) if out else None
+
+
+def _hi_english_order(text: str, rng: random.Random) -> tuple[str, float] | None:
+    """Verb moved after the subject, as an English speaker might: understandable, wrong."""
+    m = re.match(r"^(.*?)([।?!]?)$", text)
+    ws = _words(m.group(1))
+    if len(ws) < 4:
+        return None
+    k = 2 if ws[-1] in ("है", "हैं", "हूँ", "हूं", "हो", "था", "थी", "थे") else 1
+    moved = ws[:1] + ws[-k:] + ws[1:-k]
+    return _join(moved) + m.group(2), 0.65
+
+
 HINDI_PERTURBATIONS: list[tuple[str, Perturbation]] = [
     ("drop_words", _drop_words),
     ("truncate", _truncate),
@@ -194,6 +257,9 @@ HINDI_PERTURBATIONS: list[tuple[str, Perturbation]] = [
     ("pronoun", _pairs(HI_PRONOUN, 0.3)),
     ("negation", _hi_negation),
     ("spelling", _hi_spelling),
+    ("ergative_dropped", _hi_ne_drop),
+    ("english_word_order", _hi_english_order),
+    ("nasal_variant", _hi_nasal_variant),
 ]
 ENGLISH_PERTURBATIONS: list[tuple[str, Perturbation]] = [
     ("drop_words", _drop_words),
@@ -207,6 +273,9 @@ ENGLISH_PERTURBATIONS: list[tuple[str, Perturbation]] = [
     ("antonym", _pairs(EN_ANTONYM, 0.15)),
     ("negation", _en_negation),
     ("casing", _en_case),
+    ("contraction", _en_contract),
+    ("article_dropped", _en_article_drop),
+    ("auxiliary_dropped", _en_aux_drop),
 ]
 
 

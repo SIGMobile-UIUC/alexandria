@@ -73,6 +73,16 @@ def _hf_text(path: str, name: str | None = None, split: str = "train", data_dir:
     return load
 
 
+def _opensubtitles(token: str | None) -> Iterator[str]:
+    """OPUS OpenSubtitles 2018 Hindi monolingual text: film and TV dialogue, one line each."""
+    import gzip
+
+    path = download("https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/hi.txt.gz",
+                    filename="opensubtitles_hi.txt.gz")
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
+        yield from f
+
+
 MONO_SOURCES: dict[str, MonoSource] = {
     "sangraha_verified": MonoSource(
         "sangraha_verified", "AI4Bharat Sangraha, human-verified Hindi web/PDF/transcript text", "CC-BY-4.0",
@@ -94,8 +104,14 @@ MONO_SOURCES: dict[str, MonoSource] = {
         "wikipedia", "Hindi Wikipedia (Nov 2023 dump)", "CC-BY-SA-4.0",
         _hf_text("wikimedia/wikipedia", name="20231101.hi"),
     ),
+    "opensubtitles": MonoSource(
+        "opensubtitles", "OPUS OpenSubtitles 2018 Hindi: everyday spoken dialogue", "OPUS (research use)",
+        _opensubtitles,
+    ),
 }
 DEFAULT_MONO = ["sangraha_verified", "fineweb2", "indiccorp_v2", "wikipedia"]
+# Spoken-style text for word frequencies that reflect what learners hear, not the news.
+DEFAULT_SPOKEN = ["opensubtitles", "tatoeba", "tatoeba_anki", "bpcc_daily"]
 
 
 def _local_mono(path: Path) -> Iterator[str]:
@@ -249,7 +265,7 @@ PARALLEL_SOURCES: dict[str, ParallelSource] = {
     ),
     "bpcc_massive": ParallelSource(
         "bpcc_massive", "BPCC MASSIVE: short virtual-assistant requests and questions", "CC0",
-        _bpcc("massive"), weight=1.5, gated=True, tags=("conversational",), cap=20_000,
+        _bpcc("massive"), weight=1.5, gated=True, tags=("commands",), cap=20_000,
     ),
     "bpcc_wiki": ParallelSource(
         "bpcc_wiki", "BPCC-H-Wiki: human-translated Wikipedia sentences", "CC-BY-4.0",
@@ -280,6 +296,9 @@ PARALLEL_SOURCES: dict[str, ParallelSource] = {
     ),
 }
 DEFAULT_PARALLEL = ["tatoeba", "tatoeba_anki", "bpcc_daily", "bpcc_massive", "bpcc_wiki", "opus100", "iitb", "samanantar"]
+# For sentences shown to learners: no OPUS-100 (scripture, software strings, subtitle
+# fragments) and no BPCC-MASSIVE (voice-assistant commands like "play my playlist").
+LEARNER_PARALLEL = ["tatoeba", "tatoeba_anki", "bpcc_daily", "bpcc_wiki", "iitb", "samanantar"]
 
 
 def _local_parallel(path: Path) -> Iterator[tuple[str, str]]:

@@ -3,6 +3,7 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 
 export const styles = StyleSheet.create({
   container: {
+    backgroundColor: '#FFF8EC',
     flex: 1,
     justifyContent: 'center',
     flexDirection: 'row',
@@ -16,6 +17,7 @@ export const styles = StyleSheet.create({
     maxWidth: MaxContentWidth,
   },
   heroSection: {
+    backgroundColor: '#FFF8EC',
     alignItems: 'center',
     justifyContent: 'center',
     flex: 1,
@@ -24,6 +26,7 @@ export const styles = StyleSheet.create({
   },
   title: {
     textAlign: 'center',
+    color: 'text-ink'
   },
   code: {
     textTransform: 'uppercase',

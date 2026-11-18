@@ -4,3 +4,5 @@ __pycache__/
 # Training outputs and downloaded data are large; keep them out of git.
 artifacts/
 data_cache/
+alexandria/cache/
+alexandria/data/

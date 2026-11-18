@@ -1,8 +1,14 @@
-frontend/.vscode
+.vscode
+.DS_Store
 frontend/.claude
 
-backend/.env
-backend/__pycache__
-backend/.vscode
+.env
+.env.*
+!.env.example
 
-.vscode
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+*.zip

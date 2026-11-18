@@ -5,6 +5,9 @@ module.exports = {
   presets: [require('nativewind/preset')],
   theme: {
     extend: {
+      fontFamily: {
+        "dm-semibold": ["DMSans_600SemiBold"]
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
@@ -12,18 +15,19 @@ module.exports = {
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))',
+          DEFAULT: '#2A2565',
+          foreground: '#FFFFFF',
         },
         secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
+          DEFAULT: '#FFFFFF',
           foreground: 'hsl(var(--secondary-foreground))',
         },
         destructive: 'hsl(var(--destructive))',
         accent: {
-          DEFAULT: 'hsl(var(--accent))',
+          DEFAULT: '#F59E0B',
           foreground: 'hsl(var(--accent-foreground))',
         },
+        "ink": "#1F1B3A"
       },
     },
   },
